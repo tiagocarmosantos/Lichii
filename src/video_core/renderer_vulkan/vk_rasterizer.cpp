@@ -33,6 +33,7 @@
 #include "video_core/gpu_logging/gpu_logging.h"
 #include "video_core/control/channel_state.h"
 #include "video_core/native_query_trace.h"
+#include "video_core/nx2_dma_trace.h"
 #include "video_core/native_indirect_reset.h"
 #include "video_core/render_trace.h"
 #include "video_core/indirect_reset.h"
@@ -756,6 +757,19 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
         }
 
         if (mesh_draw) {
+            if (VideoCommon::Nx2DmaTrace::Enabled()) {
+                const auto& regs = maxwell3d->regs;
+                const u64 vs = (u64{regs.pipelines[1].reserved[0] & 0xff} << 32) |
+                               regs.pipelines[1].reserved[1];
+                const u64 ps = (u64{regs.pipelines[5].reserved[0] & 0xff} << 32) |
+                               regs.pipelines[5].reserved[1];
+                VideoCommon::Nx2DmaTrace::NoteMeshDraw(
+                    draw_params.num_vertices, vs, ps, render_trace_frame,
+                    is_indexed ? draw_state.index_buffer.count : draw_state.vertex_buffer.count,
+                    static_cast<u32>(draw_state.topology), is_indexed);
+                maxwell3d->LogRecentWritesForTrace(render_trace_frame,
+                                                   draw_params.num_vertices);
+            }
             scheduler.Record([groups = draw_params.num_vertices](vk::CommandBuffer cmdbuf) {
                 cmdbuf.DrawMeshTasksEXT(groups, 1, 1);
             });

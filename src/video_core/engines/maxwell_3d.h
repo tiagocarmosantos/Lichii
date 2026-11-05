@@ -3367,6 +3367,12 @@ private:
         recent_writes[recent_write_index++ % recent_writes.size()] = {method, argument, amount, pending};
     }
     void DumpRecentWrites(u32 method);
+
+public:
+    /// EDEN_NX2_DMA_TRACE diagnostics: log the last register writes (needs EDEN_NX2_3D_HISTORY=1).
+    void LogRecentWritesForTrace(u64 frame, u32 count);
+
+private:
     /// Parameters that have been submitted to the macro call so far.
     std::vector<u32> macro_params;
 

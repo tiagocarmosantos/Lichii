@@ -198,6 +198,7 @@ private:
     void SetState(const CommandHeader& command_header);
 
     void CallMethod(u32 argument);
+    void TraceVertexCount(u32 argument, u64 word_offset, bool is_inline);
     void CallMultiMethod(const u32* base_start, u32 num_methods);
     [[nodiscard]] bool WantsSegment() const;
     void ReportUnboundSubchannel();

@@ -25,6 +25,7 @@
 #include "video_core/memory_manager.h"
 #include "video_core/nx2.h"
 #include "video_core/nx2_cmdpage_diag.h"
+#include "video_core/nx2_dma_trace.h"
 #include "video_core/rasterizer_interface.h"
 
 namespace Tegra {
@@ -202,7 +203,11 @@ bool DmaPusher::Step() {
             gpu_written,
             use_safe && memory_manager.IsMemoryDirty(dma_state.dma_get,
                                                      header.size * sizeof(u32)));
-        if (submitted) {
+        // EDEN_NX2_NO_SUBMIT_SNAPSHOT=1 (experiment): never use the words snapshotted at submit
+        // time; always read the live command memory, so words patched after submission (e.g. by
+        // the copy engine, which does not mark pages GPU-written) are seen.
+        static const bool no_snapshot = std::getenv("EDEN_NX2_NO_SUBMIT_SNAPSHOT") != nullptr;
+        if (submitted && !no_snapshot) {
             const std::span<const CommandHeader> commands{
                 command_list.submitted_words.data() +
                     command_list.submitted_offsets[dma_pushbuffer_subindex],
@@ -317,6 +322,12 @@ size_t DmaPusher::ProcessCommands(std::span<const CommandHeader> commands, size_
                         subchannel->method_sink.reserve(subchannel->method_sink.size() + batch_count);
                         for (u32 i = 0; i < batch_count; ++i) {
                             subchannel->method_sink.emplace_back(dma_state.method + i, commands[index + i].argument);
+                        }
+                        if (VideoCommon::Nx2DmaTrace::Enabled() && dma_state.method <= 0x35e &&
+                            dma_state.method + batch_count > 0x35e) [[unlikely]] {
+                            const u32 i = 0x35e - dma_state.method;
+                            TraceVertexCount(commands[index + i].argument,
+                                             u64((word_offset + index + i) * sizeof(u32)), false);
                         }
                         dma_state.method += batch_count;
                         dma_state.method_count -= batch_count;
@@ -439,9 +450,34 @@ bool DmaPusher::WantsSegment() const {
            (engine == Engines::EngineTypes::Maxwell3D && dma_state.method >= MacroRegistersStart);
 }
 
+void DmaPusher::TraceVertexCount(u32 argument, u64 word_offset, bool is_inline) {
+    if (subchannel_type[dma_state.subchannel] != Engines::EngineTypes::Maxwell3D) {
+        return;
+    }
+    static u32 zero_logs{}, nonzero_logs{};
+    u32& counter = argument == 0 ? zero_logs : nonzero_logs;
+    if (counter >= 40) {
+        return;
+    }
+    ++counter;
+    const GPUVAddr address = dma_state.dma_get + word_offset;
+    const auto device = is_inline ? std::nullopt : memory_manager.GpuToCpuAddress(address);
+    LOG_INFO(HW_GPU,
+             "DMA trace vertex_buffer.count={} inline={} gpu_addr={:#x} device={:#x} "
+             "gpu_written_page={} cmdlist_page={}",
+             argument, is_inline, is_inline ? 0 : address, device.value_or(0),
+             device ? Tegra::Nx2IsGpuWritten(*device) : false,
+             device ? Tegra::Nx2IsCommandListPage(*device) : false);
+}
+
 void DmaPusher::CallMethod(u32 argument) {
     if (g_semaphore_watch != 0) [[unlikely]] {
         WatchArgument(dma_state.method, argument);
+    }
+    // EDEN_NX2_DMA_TRACE: where vertex_buffer.count (3D method 0x35e) words come from.
+    if (VideoCommon::Nx2DmaTrace::Enabled() && dma_state.method == 0x35e) [[unlikely]] {
+        TraceVertexCount(argument, dma_state.dma_word_offset,
+                         dma_state.dma_word_offset == u64(-s64(dma_state.dma_get)));
     }
     auto& split = VideoCommon::GpuSplit::Get();
     if (dma_state.method < non_puller_methods) {

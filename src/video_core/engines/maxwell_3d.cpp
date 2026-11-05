@@ -534,6 +534,24 @@ void Maxwell3D::DumpRecentWrites(u32 method) {
     }
 }
 
+void Maxwell3D::LogRecentWritesForTrace(u64 frame, u32 count) {
+    static u32 zero_dumps{}, nonzero_dumps{};
+    u32& dumps = count == 0 ? zero_dumps : nonzero_dumps;
+    if (!record_write_history || dumps >= 6) {
+        return;
+    }
+    ++dumps;
+    LOG_INFO(HW_GPU, "DMA trace history before {} mesh draw count={} (frame {}), oldest first:",
+             count == 0 ? "zero" : "NONZERO", count, frame);
+    for (size_t i = 0; i < recent_writes.size(); ++i) {
+        const auto& w = recent_writes[(recent_write_index + i) % recent_writes.size()];
+        if (w.amount != 0) {
+            LOG_INFO(HW_GPU, "DMA trace history   method {:#x} arg {:#x} amount {} pending {}",
+                     w.method, w.argument, w.amount, w.pending);
+        }
+    }
+}
+
 void Maxwell3D::CallMultiMethod(Core::System& system, u32 method, const u32* base_start, u32 amount, u32 methods_pending) {
     RecordWrite(method, amount ? base_start[0] : 0, amount, methods_pending);
     // Methods after 0xE00 are special, they're actually triggers for some microcode that was

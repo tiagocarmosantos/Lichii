@@ -30,6 +30,7 @@
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/dirty_flags.h"
 #include "video_core/memory_manager.h"
+#include "video_core/nx2_dma_trace.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/macro.h"
 
@@ -1405,6 +1406,37 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
                                  modes[0], modes[1], modes[2], modes[3]);
                     }
                 }
+                if (address == 0x35e && VideoCommon::Nx2DmaTrace::Enabled()) {
+                    static u32 zero_logs{}, nonzero_logs{};
+                    u32& counter = value == 0 ? zero_logs : nonzero_logs;
+                    if (counter < 40) {
+                        ++counter;
+                        LOG_INFO(HW_GPU,
+                                 "DMA trace macro start={:#x} wrote vertex_buffer.count={} "
+                                 "read_memory={} params({})={:08x}",
+                                 method, value, read_memory, parameters.size(),
+                                 fmt::join(parameters.first(std::min<size_t>(parameters.size(), 16)), ","));
+                    }
+                }
+                if (read_memory && VideoCommon::Nx2DmaTrace::Enabled()) {
+                    static const std::array<std::pair<size_t, const char*>, 10> names{{
+                        {MAXWELL3D_REG_INDEX(draw.begin), "draw.begin"},
+                        {MAXWELL3D_REG_INDEX(draw.end), "draw.end"},
+                        {MAXWELL3D_REG_INDEX(vertex_buffer.first), "vertex_buffer.first"},
+                        {MAXWELL3D_REG_INDEX(vertex_buffer.count), "vertex_buffer.count"},
+                        {MAXWELL3D_REG_INDEX(index_buffer.first), "index_buffer.first"},
+                        {MAXWELL3D_REG_INDEX(index_buffer.count), "index_buffer.count"},
+                        {MAXWELL3D_REG_INDEX(vertex_array_instance_first), "vertex_array_instance_first"},
+                        {MAXWELL3D_REG_INDEX(vertex_array_instance_subsequent), "vertex_array_instance_subsequent"},
+                        {0x154, "mme_mem_address_a"},
+                        {0x158, "mme_dma_read_fifoed"},
+                    }};
+                    const char* name = "";
+                    for (const auto& [index, label] : names) {
+                        if (index == address) name = label;
+                    }
+                    VideoCommon::Nx2DmaTrace::NoteMacroWrite(method, address, value, name);
+                }
                 {
                     VideoCommon::Nx2Profile::Scope method_scope{VideoCommon::Nx2Profile::Zone::Method};
                     maxwell3d.CallMethod(system, address, value, true);
@@ -1432,7 +1464,9 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
                             }
                         }
                     }
-                    if (memory.IsMemoryDirty(source, read_bytes, VideoCommon::CacheType::BufferCache)) {
+                    const bool dma_dirty =
+                        memory.IsMemoryDirty(source, read_bytes, VideoCommon::CacheType::BufferCache);
+                    if (dma_dirty) {
                         memory.FlushRegion(source, read_bytes, VideoCommon::CacheType::BufferCache);
                         static u64 flushes{};
                         if (++flushes % 2000 == 1) {
@@ -1450,6 +1484,8 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
                     const u32 word_count = std::min<u32>(value, 0x1000);
                     std::array<u32, 0x1000> dma_words;
                     memory.ReadWordsUnsafe(source, dma_words.data(), word_count);
+                    VideoCommon::Nx2DmaTrace::NoteDmaRead(
+                        method, source, std::span<const u32>{dma_words.data(), word_count}, dma_dirty);
                     for (u32 i = 0; i < word_count; ++i) {
                         const u32 word = dma_words[i];
                         if (address == DmaReadFifoed) {
